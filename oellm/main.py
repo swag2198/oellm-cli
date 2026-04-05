@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,128 @@ from oellm.utils import (
     _setup_logging,
     capture_third_party_output_from_kwarg,
 )
+
+
+def _patch_social_iqa_parquet_yaml(yaml_path: Path) -> None:
+    """Rewrite Social IQA task YAML to use local parquet paths under HF_HOME.
+
+    Hub HTTPS URLs in ``data_files`` require Hugging Face API access during
+    ``datasets`` resolution; compute nodes are often air-gapped (``HF_HUB_OFFLINE=1``)
+    and have no route to huggingface.co. Resolving paths at schedule time via
+    ``hf_hub_download`` points at files already in the shared cache so eval runs
+    use only local I/O. Models then rely on the same cache without opening Hub
+    (when ``HF_HUB_OFFLINE=1``).
+    """
+    if not yaml_path.is_file():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        return
+    try:
+        train = hf_hub_download(
+            repo_id="allenai/social_i_qa",
+            filename="default/train/0000.parquet",
+            repo_type="dataset",
+            revision="refs/convert/parquet",
+        )
+        val = hf_hub_download(
+            repo_id="allenai/social_i_qa",
+            filename="default/validation/0000.parquet",
+            repo_type="dataset",
+            revision="refs/convert/parquet",
+        )
+    except Exception as e:
+        logging.warning(
+            "Could not resolve local Social IQA parquet files into %s (%s). "
+            "On air-gapped nodes, ensure these shards exist under HF_HOME (download "
+            "once where Hub is reachable, or run schedule-eval from such a host).",
+            yaml_path,
+            e,
+        )
+        return
+
+    import yaml
+
+    with open(yaml_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        return
+    cfg.setdefault("dataset_kwargs", {})["data_files"] = {
+        "train": train,
+        "validation": val,
+    }
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    logging.info(
+        "Patched Social IQA task YAML with local parquet paths under the HF cache"
+    )
+
+
+def _materialize_lm_eval_include_path(
+    evals_dir: Path, lm_eval_include_path: str | None
+) -> str:
+    """Resolve `--include_path` for lm_eval inside Slurm/Singularity.
+
+    The default bundled YAMLs live under the oellm-cli checkout. The batch template
+    only bind-mounts ``EVAL_BASE_DIR`` (and ``HF_HOME``, etc.), so paths outside
+    that tree are often invisible in the container: TaskManager then falls back to
+    built-in tasks and ignores overrides such as ``dataset_kwargs.revision``.
+
+    Copying YAMLs into ``evals_dir`` (under ``EVAL_OUTPUT_DIR``) keeps
+    ``--include_path`` on the mounted filesystem.
+    """
+    if lm_eval_include_path is not None:
+        return lm_eval_include_path
+
+    dest = evals_dir / "custom_lm_eval_tasks"
+    dest.mkdir(parents=True, exist_ok=True)
+    bundled = Path(__file__).resolve().parent / "resources" / "custom_lm_eval_tasks"
+    if bundled.is_dir():
+        for f in bundled.iterdir():
+            if f.is_file() and f.suffix.lower() in (".yaml", ".yml"):
+                shutil.copy2(f, dest / f.name)
+        logging.info(
+            "Copied bundled lm_eval task YAMLs to %s (under EVAL_BASE_DIR for "
+            "Singularity bind)",
+            dest,
+        )
+    siqa = dest / "social_iqa.yaml"
+    if siqa.is_file():
+        _patch_social_iqa_parquet_yaml(siqa)
+    return str(dest)
+
+
+def _rewrite_lm_eval_task_paths_to_yaml(df: pd.DataFrame, include_dir: Path) -> pd.DataFrame:
+    """Use absolute paths to task YAMLs in jobs.csv for lm_eval when a file exists.
+
+    ``lm_eval --tasks <name>`` resolves through the merged index; built-in tasks can
+    shadow bundled overrides. Passing ``--tasks /path/to/task.yaml`` loads that
+    file's config directly.
+    """
+    if not include_dir.is_dir():
+        return df
+    out = df.copy()
+    lm_eval_suites = {"lm_eval", "lm-eval", "lm-eval-harness"}
+    for idx in out.index:
+        try:
+            suite = str(out.at[idx, "eval_suite"]).lower()
+        except (KeyError, TypeError):
+            continue
+        if suite not in lm_eval_suites:
+            continue
+        task = str(out.at[idx, "task_path"]).strip()
+        if not task or task.endswith((".yaml", ".yml")) or "/" in task:
+            continue
+        yaml_path = include_dir / f"{task}.yaml"
+        if yaml_path.is_file():
+            out.at[idx, "task_path"] = str(yaml_path.resolve())
+            logging.info(
+                "lm_eval will load task config from %s (not task name %r)",
+                yaml_path,
+                task,
+            )
+    return out
 
 
 @dataclass
@@ -90,9 +213,10 @@ def schedule_evals(
         venv_path: Path to a Python virtual environment. If provided, evaluations run directly using
             this venv instead of inside a Singularity/Apptainer container.
         lm_eval_include_path: Path to a directory containing custom lm_eval task YAML definitions.
-            Passed as --include_path to lm_eval. Defaults to the bundled custom_lm_eval_tasks
-            directory shipped with the package, which overrides broken upstream tasks
-            (e.g. mgsm_native_cot_fr/de/es). Override to point at additional task YAMLs.
+            Passed as --include_path to lm_eval. If omitted, bundled YAMLs are copied into
+            each run directory under ``EVAL_OUTPUT_DIR`` so Singularity can see them (only
+            ``EVAL_BASE_DIR`` and related paths are bind-mounted). Override to point at your
+            own task YAMLs (use a path under ``EVAL_BASE_DIR`` if jobs run in containers).
         local: If True, run evaluations directly on the local machine using bash instead of
             submitting to SLURM. Requires --venv_path. Skips cluster environment detection and
             runs all evaluations sequentially in a single process.
@@ -289,6 +413,11 @@ def schedule_evals(
     slurm_logs_dir.mkdir(parents=True, exist_ok=True)
     csv_path = evals_dir / "jobs.csv"
 
+    resolved_lm_eval_include = _materialize_lm_eval_include_path(
+        evals_dir, lm_eval_include_path
+    )
+    df = _rewrite_lm_eval_task_paths_to_yaml(df, Path(resolved_lm_eval_include))
+
     # Shuffle the dataframe to distribute fast/slow evaluations evenly across array jobs
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
     logging.info(
@@ -367,8 +496,7 @@ def schedule_evals(
         time_limit=time_limit,  # Dynamic time limit
         limit=limit if limit else "",  # Sample limit for quick testing
         venv_path=venv_path or "",
-        lm_eval_include_path=lm_eval_include_path
-        or str(files("oellm.resources") / "custom_lm_eval_tasks"),
+        lm_eval_include_path=resolved_lm_eval_include,
         hf_hub_offline=0 if local else 1,
         lighteval_model_args="trust_remote_code=True,batch_size=1"
         if local

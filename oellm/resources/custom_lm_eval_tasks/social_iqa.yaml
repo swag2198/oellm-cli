@@ -1,0 +1,31 @@
+# Overrides lm_eval's default `social_iqa` task: the stock Hub *script* for
+# `allenai/social_i_qa` downloads a zip from GCS. Even with
+# `revision=refs/convert/parquet`, a cached copy of that script under
+# HF_HOME/modules/... can still run and hit GCS under offline jobs.
+#
+# Fix: load the published parquet shards via the `parquet` builder only (no
+# dataset loading script). template.sbatch passes this file path to `--tasks`
+# when present. At schedule time, oellm rewrites data_files to local paths under
+# HF_HOME (via hf_hub_download) so air-gapped compute nodes need no Hub access.
+#
+# Parquet layout: https://huggingface.co/datasets/allenai/social_i_qa/tree/refs%2Fconvert%2Fparquet/default
+task: social_iqa
+dataset_path: parquet
+dataset_name: null
+dataset_kwargs:
+  data_files:
+    train: https://huggingface.co/datasets/allenai/social_i_qa/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet
+    validation: https://huggingface.co/datasets/allenai/social_i_qa/resolve/refs%2Fconvert%2Fparquet/default/validation/0000.parquet
+output_type: multiple_choice
+training_split: train
+validation_split: validation
+doc_to_text: "Q: {{context}} {{question}}\nA:"
+target_delimiter: " "
+doc_to_choice: "{{[answerA, answerB, answerC]}}"
+doc_to_target: "{{ (label|int) - 1 }}"
+metric_list:
+  - metric: acc
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 0.0

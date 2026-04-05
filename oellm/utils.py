@@ -299,6 +299,31 @@ def _process_model_paths(models: Iterable[str]):
                 )
 
 
+def _pre_download_social_iqa_parquet_shards() -> None:
+    """Cache Social IQA via Hub parquet refs instead of ``load_dataset``.
+
+    The stock ``allenai/social_i_qa`` loading script downloads a zip from GCS
+    (``storage.googleapis.com``), which often fails on HPC login nodes (SSL/proxy).
+    lm_eval uses the parquet-backed task YAML under ``custom_lm_eval_tasks``; matching
+    that here keeps schedule-time pre-download consistent with eval.
+    """
+    from huggingface_hub import hf_hub_download
+
+    kwargs: dict = {
+        "repo_id": "allenai/social_i_qa",
+        "repo_type": "dataset",
+        "revision": "refs/convert/parquet",
+    }
+    if "HF_HOME" in os.environ:
+        kwargs["cache_dir"] = str(Path(os.environ["HF_HOME"]) / "hub")
+
+    for filename in (
+        "default/train/0000.parquet",
+        "default/validation/0000.parquet",
+    ):
+        hf_hub_download(filename=filename, **kwargs)
+
+
 def _pre_download_datasets_from_specs(
     specs: Iterable, trust_remote_code: bool = True
 ) -> None:
@@ -317,6 +342,18 @@ def _pre_download_datasets_from_specs(
         for idx, spec in enumerate(specs_list, 1):
             label = f"{spec.repo_id}" + (f"/{spec.subset}" if spec.subset else "")
             status.update(f"Downloading '{label}' ({idx}/{len(specs_list)})")
+
+            if spec.repo_id == "allenai/social_i_qa":
+                try:
+                    _pre_download_social_iqa_parquet_shards()
+                except Exception as e:
+                    logging.warning(
+                        "Could not pre-cache Social IQA parquet from Hugging Face (%s). "
+                        "If shards already exist under HF_HOME, eval may still work.",
+                        e,
+                    )
+                logging.debug(f"Finished parquet cache for '{label}'.")
+                continue
 
             try:
                 load_dataset(
