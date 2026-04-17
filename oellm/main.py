@@ -755,9 +755,20 @@ def collect_results(
             for _s in _subs:
                 group_subtask_names.add(_s)
 
-        # Prefer only the first aggregate metric from groups (simplified)
+        # Prefer only the root aggregate metric from groups (simplified).
+        # Pick the group that is not a subtask of any other group; fall back to
+        # the first entry. This is stable across lm-eval versions (older
+        # versions listed the root group first in the JSON, newer versions
+        # list it last).
         if groups_map:
-            group_name, group_results = next(iter(groups_map.items()))
+            _all_subs = {
+                s for _subs in group_subtasks_map.values() for s in _subs
+            }
+            _root_groups = [g for g in groups_map if g not in _all_subs]
+            group_name = (
+                _root_groups[0] if _root_groups else next(iter(groups_map))
+            )
+            group_results = groups_map[group_name]
             n_shot = n_shot_data.get(group_name, "unknown")
             if n_shot == "unknown":
                 for subtask_name in group_subtasks_map.get(group_name, []):
