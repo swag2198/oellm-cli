@@ -302,7 +302,22 @@ def _process_model_paths(models: Iterable[str]):
 def _pre_download_datasets_from_specs(
     specs: Iterable, trust_remote_code: bool = True
 ) -> None:
+    import inspect
     from datasets import get_dataset_config_names, load_dataset
+
+    # ``trust_remote_code`` was removed in ``datasets>=4.0`` (loading scripts are no
+    # longer supported). Only forward the kwarg if the installed version still
+    # accepts it, so the CLI works regardless of which venv invokes it.
+    def _trc_kwargs(func) -> dict:
+        if not trust_remote_code:
+            return {}
+        params = inspect.signature(func).parameters
+        if "trust_remote_code" in params:
+            return {"trust_remote_code": trust_remote_code}
+        return {}
+
+    load_trc = _trc_kwargs(load_dataset)
+    configs_trc = _trc_kwargs(get_dataset_config_names)
 
     specs_list = list(specs)
     if not specs_list:
@@ -322,12 +337,12 @@ def _pre_download_datasets_from_specs(
                 load_dataset(
                     spec.repo_id,
                     name=spec.subset,
-                    trust_remote_code=trust_remote_code,
+                    **load_trc,
                 )
             except ValueError as e:
                 if "Config name is missing" in str(e) and spec.subset is None:
                     configs = get_dataset_config_names(
-                        spec.repo_id, trust_remote_code=trust_remote_code
+                        spec.repo_id, **configs_trc
                     )
                     logging.info(
                         f"Dataset '{spec.repo_id}' requires config. "
@@ -340,7 +355,7 @@ def _pre_download_datasets_from_specs(
                         load_dataset(
                             spec.repo_id,
                             name=cfg,
-                            trust_remote_code=trust_remote_code,
+                            **load_trc,
                         )
                     continue
                 raise
