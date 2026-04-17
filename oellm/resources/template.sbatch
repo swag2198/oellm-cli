@@ -15,6 +15,7 @@ TOTAL_EVALS={total_evals}
 LIMIT="{limit}"
 VENV_PATH="{venv_path}"
 LM_EVAL_INCLUDE_PATH="{lm_eval_include_path}"
+MODULES_TO_LOAD="{modules}"
 
 # avoiding crashes due to compute nodes not having access to the internet
 export HF_HOME=$HF_HOME
@@ -52,16 +53,19 @@ if [ "$START_INDEX" -gt "$END_INDEX" ]; then
     exit 0
 fi
 
-# Use `tail` and `head` to slice the CSV file for the tasks assigned to this job.
-# The +1 on START_INDEX accounts for the header row.
+# Use `tail` and `head` to slice the jobs.tsv file for the tasks assigned to this job.
+# The +1 on START_INDEX accounts for the header row. Fields are tab-separated so that
+# `model_args` (which contains commas) round-trips cleanly through bash.
 tail -n +$((START_INDEX + 1)) "$CSV_PATH" | head -n $((END_INDEX - START_INDEX + 1)) | \
-while IFS=, read -r model_path task_path n_shot eval_suite
+while IFS=$'\t' read -r model_path task_path n_shot eval_suite model_type model_args
 do
     # Remove trailing carriage returns if script is edited on Windows
     model_path=$(echo "$model_path" | tr -d '\r')
     task_path=$(echo "$task_path" | tr -d '\r')
     n_shot=$(echo "$n_shot" | tr -d '\r')
     eval_suite=$(echo "${{eval_suite:-lm_eval}}" | tr -d '\r')
+    model_type=$(echo "${{model_type:-hf}}" | tr -d '\r')
+    model_args=$(echo "$model_args" | tr -d '\r')
 
     # Skip empty lines
     if [ -z "$model_path" ]; then
@@ -74,6 +78,10 @@ do
     echo "  Task: $task_path"
     echo "  N-shot: $n_shot"
     echo "  Suite: $eval_suite"
+    echo "  Model type: $model_type"
+    if [ -n "$model_args" ]; then
+        echo "  Model args: $model_args"
+    fi
     echo "----------------------------------------------------"
 
     # Build bind paths: always mount the shared eval directory, and additionally
@@ -111,10 +119,21 @@ do
 
     suite_normalized=$(echo "$eval_suite" | tr '[:upper:]' '[:lower:]')
 
-    # Helper function to run Python commands in the appropriate environment
+    # Helper function to run Python commands in the appropriate environment.
+    # When running under a venv, optionally `module load` any modules requested via
+    # the CLI (e.g. gcc/cuda for Megatron-LM); `module` isn't available inside the
+    # Singularity container path, so it's a no-op there.
     run_python() {{
         if [ -n "$VENV_PATH" ]; then
             source "$VENV_PATH/bin/activate"
+            if [ -n "$MODULES_TO_LOAD" ]; then
+                IFS=',' read -ra MODS <<< "$MODULES_TO_LOAD"
+                for mod in "${{MODS[@]}}"; do
+                    mod="$(echo "$mod" | tr -d '[:space:]')"
+                    [ -z "$mod" ] && continue
+                    module load "$mod"
+                done
+            fi
             python "$@"
         else
             singularity exec $SINGULARITY_ARGS \
@@ -129,14 +148,50 @@ do
 
     case "$suite_normalized" in
         lm_eval|lm-eval|lm-eval-harness)
-            run_python -m lm_eval --model hf \
-                --model_args pretrained="$model_path",trust_remote_code=True \
+            model_type_normalized=$(echo "${{model_type:-hf}}" | tr '[:upper:]' '[:lower:]')
+            LM_EVAL_EXTRA_ARGS=()
+            case "$model_type_normalized" in
+                megatron_lm|megatron-lm)
+                    if [ -z "$VENV_PATH" ]; then
+                        echo "[error] model_type=$model_type requires --venv_path."
+                        exit 1
+                    fi
+                    # Sensible defaults for Leonardo; can be overridden via
+                    # --slurm_template_var or by exporting these at submit time.
+                    export MEGATRON_PATH="${{MEGATRON_PATH:-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/submodules/Megatron-LM}}"
+                    export MASTER_ADDR="${{MASTER_ADDR:-127.0.0.1}}"
+                    # Derive a unique MASTER_PORT per array task so co-located jobs
+                    # (Slurm packs up to 4 single-GPU tasks onto one 4xA100 node on
+                    # Leonardo) don't collide on the torch.distributed TCPStore and
+                    # fail with EADDRINUSE. Respect an explicit override if set.
+                    if [ -z "${{MASTER_PORT:-}}" ]; then
+                        _array_job_id="${{SLURM_ARRAY_JOB_ID:-${{SLURM_JOB_ID:-0}}}}"
+                        _array_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+                        export MASTER_PORT=$(( 20000 + (_array_job_id + _array_task_id * 37) % 20000 ))
+                    fi
+                    LM_EVAL_MODEL="$model_type_normalized"
+                    LM_EVAL_MODEL_ARGS="$model_args"
+                    LM_EVAL_EXTRA_ARGS+=(--batch_size 1)
+                    ;;
+                hf|"")
+                    LM_EVAL_MODEL="hf"
+                    LM_EVAL_MODEL_ARGS="pretrained=$model_path,trust_remote_code=True"
+                    ;;
+                *)
+                    LM_EVAL_MODEL="$model_type_normalized"
+                    LM_EVAL_MODEL_ARGS="$model_args"
+                    ;;
+            esac
+
+            run_python -m lm_eval --model "$LM_EVAL_MODEL" \
+                --model_args "$LM_EVAL_MODEL_ARGS" \
                 --tasks "$task_path" \
                 --num_fewshot "$n_shot" \
                 --output_path "{evals_dir}/$(openssl rand -hex 5).json" \
                 --trust_remote_code \
                 ${{LM_EVAL_INCLUDE_PATH:+--include_path $LM_EVAL_INCLUDE_PATH}} \
-                ${{LIMIT:+--limit $LIMIT}}
+                ${{LIMIT:+--limit $LIMIT}} \
+                "${{LM_EVAL_EXTRA_ARGS[@]}}"
             ;;
         lighteval|light-eval)
             LIGHT_TASK="$task_path"

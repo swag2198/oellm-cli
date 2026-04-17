@@ -53,6 +53,36 @@ class EvaluationJob:
     task_path: str
     n_shot: int
     eval_suite: str
+    model_type: str = "hf"
+    model_args: str = ""
+
+
+def _parse_megatron_model_id(model_args) -> str:
+    """Derive a short, stable identifier from an lm-eval ``megatron_lm`` args spec.
+
+    Accepts either the comma-separated string passed on the CLI
+    (``load=<path>/<run_dir>/checkpoints,ckpt_step=<n>,...``) or the dict that
+    lm-eval stores under ``config.model_args`` in its result JSON. Returns
+    ``<run_dir>__step<n>`` when both fields are present, or a best-effort
+    fallback otherwise.
+    """
+    if isinstance(model_args, dict):
+        parts = {str(k): str(v) for k, v in model_args.items()}
+    else:
+        parts = {}
+        for kv in str(model_args).split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                parts[k.strip()] = v.strip()
+    load = parts.get("load")
+    step = parts.get("ckpt_step")
+    if not load:
+        return str(model_args)
+    load_path = Path(load)
+    run_dir = load_path.parent.name if load_path.name == "checkpoints" else load_path.name
+    if not run_dir:
+        run_dir = str(load_path)
+    return f"{run_dir}__step{step}" if step else run_dir
 
 
 @capture_third_party_output_from_kwarg("verbose")
@@ -63,6 +93,9 @@ def schedule_evals(
     n_shot: int | list[int] | None = None,
     eval_csv_path: str | None = None,
     *,
+    model_type: str = "hf",
+    model_args: str | None = None,
+    modules: str | None = None,
     max_array_len: int = 128,
     limit: int | None = None,
     verbose: bool = False,
@@ -115,8 +148,48 @@ def schedule_evals(
         slurm_template_var: JSON object of template variable overrides. Use exact env var names
             (PARTITION, ACCOUNT, GPUS_PER_NODE). "TIME" overrides the time limit.
             Example: '{"PARTITION":"dev-g","ACCOUNT":"FOO","TIME":"02:00:00","GPUS_PER_NODE":2}'
+        model_type: lm-eval ``--model`` backend. ``hf`` (default) preserves the current HF flow.
+            ``megatron_lm`` evaluates a Megatron-LM checkpoint and requires ``--venv_path`` and
+            ``--model_args``; ``--models`` and ``--eval_csv_path`` must not be set in that mode.
+        model_args: Fully-resolved lm-eval ``--model_args`` string. Only valid when
+            ``model_type != "hf"``; for HF the args are built automatically from the model path.
+            For ``megatron_lm``, pass a single ``load=...,ckpt_step=...,ckpt_format=torch_dist,
+            vocab_file=...,merge_file=...,tokenizer_type=GPT2BPETokenizer`` style string.
+        modules: Comma-separated list of environment modules to ``module load`` inside each job
+            before invoking ``python`` (e.g. ``"gcc/12.2.0,cuda/12.6"``). Applied only when
+            ``--venv_path`` is used (container jobs don't have ``module`` available).
     """
     _setup_logging(verbose)
+
+    model_type = (model_type or "hf").strip()
+    if model_type != "hf":
+        if model_args is None or not str(model_args).strip():
+            raise ValueError(
+                f"--model_args is required when --model_type={model_type!r}."
+            )
+        if not venv_path:
+            raise ValueError(
+                f"--venv_path is required when --model_type={model_type!r} "
+                "(module load + the lm-eval backend stack run from the venv)."
+            )
+        if models:
+            raise ValueError(
+                f"--models is not supported with --model_type={model_type!r}; "
+                "pass the checkpoint via --model_args instead."
+            )
+        if eval_csv_path:
+            raise ValueError(
+                f"--eval_csv_path is not supported with --model_type={model_type!r}."
+            )
+        if not tasks and not task_groups:
+            raise ValueError(
+                f"--tasks or --task_groups is required when --model_type={model_type!r}."
+            )
+    elif model_args is not None:
+        raise ValueError(
+            "--model_args is only valid when --model_type is set to a non-hf backend "
+            "(e.g. megatron_lm)."
+        )
 
     if local:
         if not venv_path:
@@ -219,8 +292,46 @@ def schedule_evals(
                 ]
             )
 
+    elif model_type != "hf":
+        megatron_model_id = _parse_megatron_model_id(str(model_args))
+        if task_groups is None:
+            eval_jobs.extend(
+                [
+                    EvaluationJob(
+                        model_path=megatron_model_id,
+                        task_path=task,
+                        n_shot=shot,
+                        eval_suite="lm_eval",
+                        model_type=model_type,
+                        model_args=str(model_args),
+                    )
+                    for task in tasks
+                    for shot in n_shot
+                ]
+            )
+        else:
+            expanded = _expand_task_groups([g.strip() for g in task_groups.split(",")])
+            eval_jobs.extend(
+                [
+                    EvaluationJob(
+                        model_path=megatron_model_id,
+                        task_path=result.task,
+                        n_shot=result.n_shot,
+                        eval_suite=result.suite,
+                        model_type=model_type,
+                        model_args=str(model_args),
+                    )
+                    for result in expanded
+                ]
+            )
+
     expanded_eval_jobs = []
     for job in eval_jobs:
+        # Non-HF backends (e.g. megatron_lm) encode the checkpoint in `model_args`;
+        # `model_path` is a display-only id and isn't a filesystem path to expand.
+        if job.model_type != "hf":
+            expanded_eval_jobs.append(job)
+            continue
         local_model_paths = _expand_local_model_paths(job.model_path)
         if not local_model_paths:
             expanded_eval_jobs.append(job)
@@ -232,6 +343,8 @@ def schedule_evals(
                         task_path=job.task_path,
                         n_shot=job.n_shot,
                         eval_suite=job.eval_suite,
+                        model_type=job.model_type,
+                        model_args=job.model_args,
                     )
                 )
 
@@ -239,7 +352,7 @@ def schedule_evals(
         hub_models: set[str | Path] = {
             job.model_path
             for job in expanded_eval_jobs
-            if not Path(job.model_path).exists()
+            if job.model_type == "hf" and not Path(job.model_path).exists()
         }
         _process_model_paths(hub_models)
     else:
@@ -303,7 +416,7 @@ def schedule_evals(
 
     slurm_logs_dir = evals_dir / "slurm_logs"
     slurm_logs_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = evals_dir / "jobs.csv"
+    csv_path = evals_dir / "jobs.tsv"
 
     # Shuffle the dataframe to distribute fast/slow evaluations evenly across array jobs
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
@@ -311,7 +424,20 @@ def schedule_evals(
         "Shuffled evaluation jobs for even load distribution across array workers"
     )
 
-    df.to_csv(csv_path, index=False)
+    # Ensure a stable column order so the sbatch row parser can rely on positions.
+    expected_cols = [
+        "model_path",
+        "task_path",
+        "n_shot",
+        "eval_suite",
+        "model_type",
+        "model_args",
+    ]
+    for col, default in (("model_type", "hf"), ("model_args", "")):
+        if col not in df.columns:
+            df[col] = default
+    df = df[expected_cols]
+    df.to_csv(csv_path, index=False, sep="\t")
 
     sbatch_template = (files("oellm.resources") / "template.sbatch").read_text()
 
@@ -390,6 +516,7 @@ def schedule_evals(
         if local
         else "trust_remote_code=True",
         evalchemy_dir=os.environ.get("EVALCHEMY_DIR", "/opt/evalchemy"),
+        modules=modules or "",
     )
 
     # substitute any $ENV_VAR occurrences
@@ -551,15 +678,22 @@ def collect_results(
 
     logging.info(f"Found {len(json_files)} result files")
 
-    # If check mode, also load the jobs.csv to compare
+    # If check mode, also load the jobs file to compare. Prefer the new jobs.tsv
+    # (tab-separated, written by schedule-eval) and fall back to legacy jobs.csv.
     if check:
+        jobs_tsv_path = results_path / "jobs.tsv"
         jobs_csv_path = results_path / "jobs.csv"
-        if not jobs_csv_path.exists():
-            logging.warning(f"No jobs.csv found in {results_dir}, cannot perform check")
-            check = False
-        else:
+        if jobs_tsv_path.exists():
+            jobs_df = pd.read_csv(jobs_tsv_path, sep="\t")
+            logging.info(f"Found {len(jobs_df)} scheduled jobs in jobs.tsv")
+        elif jobs_csv_path.exists():
             jobs_df = pd.read_csv(jobs_csv_path)
             logging.info(f"Found {len(jobs_df)} scheduled jobs in jobs.csv")
+        else:
+            logging.warning(
+                f"No jobs.tsv or jobs.csv found in {results_dir}, cannot perform check"
+            )
+            check = False
 
     # Collect results
     rows = []
@@ -569,8 +703,29 @@ def collect_results(
         with open(json_file) as f:
             data = json.load(f)
 
-        # Extract model name/path
+        # Extract model name/path. lm-eval's ``megatron_lm`` backend writes a
+        # random 8-char token to ``model_name`` and stores the real args under
+        # ``config.model_args`` (a dict). For HF the ``model_name`` is already
+        # the pretrained path. Normalize megatron entries to the same short id
+        # we use in jobs.tsv so matching works during --check and the collected
+        # CSV is readable.
         model_name = data.get("model_name", "unknown")
+        _cfg = data.get("config") or {}
+        _model_source = data.get("model_source") or _cfg.get("model") or ""
+        if isinstance(_model_source, str) and _model_source.lower().startswith(
+            "megatron"
+        ):
+            model_args_dict = _cfg.get("model_args")
+            if model_args_dict:
+                model_name = _parse_megatron_model_id(model_args_dict)
+        elif (
+            isinstance(model_name, str)
+            and "load=" in model_name
+            and "ckpt_step=" in model_name
+        ):
+            # Defensive fallback if a future lm-eval version inlines the args
+            # string into model_name for megatron runs.
+            model_name = _parse_megatron_model_id(model_name)
 
         # Extract results for each task
         results = data.get("results", {})
