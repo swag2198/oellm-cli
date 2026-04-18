@@ -20,7 +20,7 @@ export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 
 VENV_PATH="${VENV_PATH:-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-cli/.venv-megatron}"
 TASK_GROUPS="${TASK_GROUPS:-open-sci-0.01}"
-ACCOUNT="${ACCOUNT:-OELLM_prod2026}"
+ACCOUNT=OELLM_prod2026
 TIME="${TIME:-06:00:00}"
 MODULES="${MODULES:-gcc/12.2.0,cuda/12.6}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -29,20 +29,46 @@ DRY_RUN="${DRY_RUN:-0}"
 # "CKPT_DIR CKPT_STEP" per line; blank lines / lines starting with '#' are ignored.
 CHECKPOINTS=$(cat <<'EOF'
 # MoE without GQA (bsz256, lr0.001, decay120BT)
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_16_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_32_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_64_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_16_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_32_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_64_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_8_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_16_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_32_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_bsz256_lr_sparsity_grid_A130M_120BT/moe_abl_nexp_64_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+
 
 # MoE with GQA
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_8_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_16_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_32_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_64_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_8_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_16_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_32_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_64_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
 
-# Diana's dense Qwen3 300M baselines
-/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay120BT/checkpoints 114441
-/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay200BT/checkpoints 95368
-/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay300BT/checkpoints 143052
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_8_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_16_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_32_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_GQA_nexp_64_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+
+# Diana's dense Qwen3 300M baselines with GQA
+# /leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay200BT/checkpoints 95368
+# /leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay300BT/checkpoints 143052
+# /leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay50BT/checkpoints 47684
+# /leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay80BT/checkpoints 76294
+
+
+# MoE no GQA replication (just to check random variations)
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_no_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_no_GQA_nexp_8_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_no_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_no_GQA_nexp_8_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_no_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_no_GQA_nexp_32_lr0.001_gbsz256_seed1234_decay80BT/checkpoints 76294
+# /leonardo_work/OELLM_prod2026/users/shaldar0/oellm-autoexp/results/moe_no_GQA_bsz256_lr_sparsity_grid_A130M_120BT/moe_no_GQA_nexp_32_lr0.001_gbsz256_seed1234_decay120BT/checkpoints 114441
+
+# Diana's dense Qwen3 300M baselines without GQA
+/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/old_no_gqa_qwen/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay120BT/checkpoints 114441
+/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/old_no_gqa_qwen/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay300BT/checkpoints 143052
+/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/old_no_gqa_qwen/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz512_beta20.95_decay200BT/checkpoints 95368
+/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/old_no_gqa_qwen/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay80BT/checkpoints 76294
+/leonardo_work/OELLM_prod2026/users/donutu00/oellm-autoexp/results/old_no_gqa_qwen/qwen3_300M_gpt_neox/dense_qwen3_300M_gpt_neox_lr0.002_gbsz256_beta20.95_decay50BT/checkpoints 47684
 EOF
 )
 
